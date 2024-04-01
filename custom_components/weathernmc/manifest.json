@@ -1,9 +1,10 @@
   {
     "domain": "weathernmc",
     "name": "weathernmc",
-    "documentation": "https://github.com/AgatsumaZen1tsu/homeassistant.components.weather.Weathernmc",
+    "codeowners": ["@xtjun"],
     "dependencies": [],
-    "codeowners": ["AgatsumaZen1tsu"],
+    "documentation": "https://github.com/xtjun/Weathernmc",
+    "iot_class": "cloud_polling",
     "requirements": [],
-    "version": "1.0.0"
+    "version": "1.1.0"
   }
