@@ -122,9 +122,14 @@ class NmcWeather(WeatherEntity):
         self._wind_bearing = None
         self._visibility = None
         self._precipitation = None
+
         self._dew = None
         self._feelslike = None
         self._cloud = None
+
+        self._aqi = None
+        self._aqi_description = None
+        self._alert = None
 
         self._updatetime = None
         self._forecast = None
@@ -224,6 +229,22 @@ class NmcWeather(WeatherEntity):
                ATTR_ATTRIBUTION: ATTRIBUTION,
                ATTR_UPDATE_TIME: self._updatetime
            }
+
+    # 空气质量
+    @property
+    def aqi(self):
+       return self._aqi
+
+    # 空气质量描述
+    # @property
+    # def aqi_description(self):
+    #     return self._aqi_description
+
+    # 预警
+    # @property
+    # def alert(self):
+    #     return '无' if self._alert == '9999' else self._alert
+
     @property
     def forecast(self):
         """天预报"""
@@ -263,11 +284,15 @@ class NmcWeather(WeatherEntity):
         self._condition = weather['real']['weather']['info']                     #天气
         self._temperature = float(weather['real']['weather']['temperature'])     #温度
         self._humidity = float(weather['real']['weather']['humidity'])           #湿度
-        self._pressure = weather['passedchart'][0]['pressure'] #气压
-        self._wind_speed = weather['passedchart'][0]['windSpeed'] #风速
-        self._wind_bearing = weather['real']['wind']['direct'] #风向
-        self._precipitation = float(weather['passedchart'][0]['rain1h']) #降水量
-        self._feelslike = float(weather['real']['weather']['feelst']) #体感温度
+        self._pressure = weather['passedchart'][0]['pressure']                   #气压
+        self._wind_speed = weather['real']['wind']['power']                      #风速
+        self._wind_bearing = weather['real']['wind']['direct']                   #风向
+        self._precipitation = float(weather['passedchart'][0]['rain1h'])         #降水量
+        self._feelslike = float(weather['real']['weather']['feelst'])            #体感温度
+
+        self._aqi = weather['air']['aqi']                         #空气质量
+        self._aqi_description = weather['air']['text']                   #空气质量描述
+        self._alert = weather['real']['warn']['alert']                   #预警
 
         # self._dew = float(weather['real']['weather']["dew"]) #露点温度
         # self._cloud = int(weather["cloud"]) #云量
@@ -287,7 +312,8 @@ class NmcWeather(WeatherEntity):
                 ATTR_FORECAST_WIND_SPEED: weather['predict']['detail'][i]['day']['wind']['power'],
                 'text': weather['predict']['detail'][i]['day']['weather']['info']
             }
-            forecast_data.append(data_dict)
+            if datetime.strptime(time_str, "%Y-%m-%d").date() >= datetime.now().date():
+                forecast_data.append(data_dict)
 
         self._forecast = forecast_data
         self._forecast_hourly = []
