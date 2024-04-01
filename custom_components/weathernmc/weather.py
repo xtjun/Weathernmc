@@ -218,22 +218,22 @@ class NmcWeather(WeatherEntity):
 
     @property
     def attribution(self):
-       """归属信息"""
-       return 'Powered by NMC.CN'
+        """归属信息"""
+        return 'Powered by NMC.CN'
 
     @property
     def device_state_attributes(self):
-       """设置其它一些属性值"""
-       if self._condition is not None:
-           return {
-               ATTR_ATTRIBUTION: ATTRIBUTION,
-               ATTR_UPDATE_TIME: self._updatetime
-           }
+        """设置其它一些属性值"""
+        if self._condition is not None:
+            return {
+                ATTR_ATTRIBUTION: ATTRIBUTION,
+                ATTR_UPDATE_TIME: self._updatetime
+            }
 
     # 空气质量
     @property
     def aqi(self):
-       return self._aqi
+        return self._aqi
 
     # 空气质量描述
     # @property
@@ -249,6 +249,7 @@ class NmcWeather(WeatherEntity):
     def forecast(self):
         """天预报"""
         return self._forecast
+
     @property
     def forecast_hourly(self):
         """小时预报"""
@@ -273,7 +274,7 @@ class NmcWeather(WeatherEntity):
             timeout = aiohttp.ClientTimeout(total=20)
             connector = aiohttp.TCPConnector(limit=10)
             async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-                async with session.get(self. _url) as response:
+                async with session.get(self._url) as response:
                     json_data = await response.json()
                     weather = json_data["data"]
         except(asyncio.TimeoutError, aiohttp.ClientError):
@@ -281,18 +282,18 @@ class NmcWeather(WeatherEntity):
             return
 
         # 数据处理
-        self._condition = weather['real']['weather']['info']                     #天气
-        self._temperature = float(weather['real']['weather']['temperature'])     #温度
-        self._humidity = float(weather['real']['weather']['humidity'])           #湿度
-        self._pressure = weather['passedchart'][0]['pressure']                   #气压
-        self._wind_speed = weather['real']['wind']['power']                      #风速
-        self._wind_bearing = weather['real']['wind']['direct']                   #风向
-        self._precipitation = float(weather['passedchart'][0]['rain1h'])         #降水量
-        self._feelslike = float(weather['real']['weather']['feelst'])            #体感温度
+        self._condition = weather['real']['weather']['info']  # 天气
+        self._temperature = float(weather['real']['weather']['temperature'])  # 温度
+        self._humidity = float(weather['real']['weather']['humidity'])  # 湿度
+        self._pressure = weather['passedchart'][0]['pressure']  # 气压
+        self._wind_speed = weather['real']['wind']['power']  # 风速
+        self._wind_bearing = weather['real']['wind']['direct']  # 风向
+        self._precipitation = float(weather['passedchart'][0]['rain1h'])  # 降水量
+        self._feelslike = float(weather['real']['weather']['feelst'])  # 体感温度
 
-        self._aqi = weather['air']['aqi']                         #空气质量
-        self._aqi_description = weather['air']['text']                   #空气质量描述
-        self._alert = weather['real']['warn']['alert']                   #预警
+        self._aqi = weather['air']['aqi']  # 空气质量
+        self._aqi_description = weather['air']['text']  # 空气质量描述
+        self._alert = weather['real']['warn']['alert']  # 预警
 
         # self._dew = float(weather['real']['weather']["dew"]) #露点温度
         # self._cloud = int(weather["cloud"]) #云量
@@ -317,6 +318,5 @@ class NmcWeather(WeatherEntity):
 
         self._forecast = forecast_data
         self._forecast_hourly = []
-
 
         _LOGGER.info("success to load local informations")
