@@ -1,49 +1,57 @@
-import json
-import time
-from datetime import datetime
-from typing import final
+import logging
+from datetime import datetime, timedelta
 
-import requests
+import asyncio
+import async_timeout
+import aiohttp
+
+import voluptuous as vol
+
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.event import async_track_time_interval
+
 from homeassistant.components.weather import (
     WeatherEntity,
+    WeatherEntityFeature,
+    Forecast,
     ATTR_FORECAST_CONDITION,
-    ATTR_FORECAST_TEMP,
-    ATTR_FORECAST_TEMP_LOW,
+    ATTR_FORECAST_NATIVE_TEMP,
+    ATTR_FORECAST_NATIVE_TEMP_LOW,
     ATTR_FORECAST_TIME,
+    ATTR_FORECAST_HUMIDITY,
+    ATTR_FORECAST_NATIVE_PRECIPITATION,
     ATTR_FORECAST_WIND_BEARING,
-    ATTR_FORECAST_WIND_SPEED)
-from homeassistant.const import (TEMP_CELSIUS,
-                                 PRESSURE_HPA,
-                                 PRECIPITATION_MILLIMETERS_PER_HOUR)
+    ATTR_FORECAST_WIND_SPEED,
+    ATTR_FORECAST_NATIVE_WIND_SPEED,
+    PLATFORM_SCHEMA)
+from homeassistant.const import (
+    ATTR_ATTRIBUTION,
+    UnitOfLength,
+    UnitOfPressure,
+    UnitOfSpeed,
+    UnitOfVolumetricFlux,
+    UnitOfTemperature
+)
 
-VERSION = '1.0.0'
-DOMAIN = 'weathernmc'
+import homeassistant.helpers.config_validation as cv
+import homeassistant.util.dt as dt_util
 
-# hass状态列表
-# {
-#   "clear-night": "晴夜",
-#   "cloudy": "多云",
-#   "exceptional": "特别",
-#   "fog": "雾",
-#   "hail": "冰雹",
-#   "lightning": "闪电",
-#   "lightning-rainy": "雷雨",
-#   "partlycloudy": "局部多云",
-#   "pouring": "Pouring",
-#   "rainy": "下雨",
-#   "snowy": "下雪",
-#   "snowy-rainy": "雨夹雪",
-#   "sunny": "晴天",
-#   "windy": "有风",
-#   "windy-variant": "风"
-# }
+_LOGGER = logging.getLogger(__name__)
+
+TIME_BETWEEN_UPDATES = timedelta(seconds=1800)
+HOURLY_TIME_BETWEEN_UPDATES = timedelta(seconds=1800)
+
+DEFAULT_TIME = dt_util.now()
+
+CONF_STATIONID = "stationId"
+CONF_NAME = "name"
 
 # 状态翻译
 CONDITION_MAP = {
     '晴': 'sunny',
     '多云': 'cloudy',
     '局部多云': 'partlycloudy',
-    '阴': 'cloudy',
+    '阴': 'partlycloudy',
     '薄雾': 'fog',
     '雾': 'fog',
     '中雾': 'fog',
@@ -57,157 +65,224 @@ CONDITION_MAP = {
     '大雨': 'pouring',
     '暴雨': 'pouring',
     '雷阵雨': 'lightning-rainy',
-    '雨夹雪': 'snowy-rainy',
     '雪': 'snowy',
     '小雪': 'snowy',
     '中雪': 'snowy',
     '大雪': 'snowy',
     '暴雪': 'snowy',
-    '大风': 'windy',
+    '雨夹雪': 'snowy-rainy',
+    '风': 'windy',
+    '有风': 'windy',
+    '大风': 'windy-variant',
+    '飓风': 'hurricane',
     '冰雹': 'hail',
     '9999': 'exceptional',
-
+    '未知': 'exceptional',
 }
 
+ATTR_UPDATE_TIME = "更新时间"
+ATTRIBUTION = "来自nmc.cn的天气数据"
 
-def setup_platform(hass, config, add_entities, discovery_info=None):
-    add_entities([NMCWeather(config.get('code'),config.get('name','weathernmc'))])
+PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
+    vol.Required(CONF_STATIONID): cv.string,
+    vol.Required(CONF_NAME): cv.string,
+})
 
 
-class NMCWeather(WeatherEntity):
+# @asyncio.coroutine
+async def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
+    """Set up the hefeng weather."""
+    _LOGGER.info("setup platform weather.Heweather...")
 
-    def __init__(self, code: str,name: str):
-        self._forecast_data = None
-        self._code = code
+    station_id = config.get(CONF_STATIONID)
+    name = config.get(CONF_NAME)
+
+    async_add_devices([NmcWeather(station_id, name)], True)
+
+
+class NmcWeather(WeatherEntity):
+    """Representation of a weather condition."""
+
+    _attr_native_temperature_unit = UnitOfTemperature.CELSIUS
+    _attr_native_precipitation_unit = UnitOfVolumetricFlux.MILLIMETERS_PER_HOUR
+    _attr_native_pressure_unit = UnitOfPressure.HPA
+    _attr_native_wind_speed_unit = UnitOfSpeed.KILOMETERS_PER_HOUR
+    _attr_native_visibility_unit = UnitOfLength.KILOMETERS
+
+    def __init__(self, station_id, name):
+        """Initialize the  weather."""
+        self._url = "http://www.nmc.cn/rest/weather?stationid=" + station_id
+
         self._name = name
-        self._url = str.format("http://www.nmc.cn/rest/weather?stationid="+code)
+        self._condition = None
+        self._temperature = None
+        self._humidity = None
+        self._pressure = None
+        self._wind_speed = None
+        self._wind_bearing = None
+        self._visibility = None
+        self._precipitation = None
+        self._dew = None
+        self._feelslike = None
+        self._cloud = None
 
-        self.update()
+        self._updatetime = None
+        self._forecast = None
+        self._forecast_hourly = None
+
+        self._object_id = 'localweather'
+        self._attr_unique_id = 'weather_' + station_id
+
+        self._attr_supported_features = 0
+        self._attr_supported_features = WeatherEntityFeature.FORECAST_DAILY
+        self._attr_supported_features |= WeatherEntityFeature.FORECAST_HOURLY
 
     @property
     def name(self):
+        """返回实体的名字."""
         return self._name
 
-    # 当前状态
     @property
-    def state(self):
-        return CONDITION_MAP[self._forecast_data['real']['weather']['info']]
+    def should_poll(self):
+        """attention No polling needed for a demo weather condition."""
+        return True
 
-    # 底部说明
     @property
-    def attribution(self):
-        return 'Powered by www.nmc.cn'
+    def native_dew_point(self):
+        """露点温度"""
+        return self._dew
 
-    #气温
     @property
-    def temperature(self):
-        return self._forecast_data['real']['weather']['temperature']
+    def native_apparent_temperature(self):
+        """体感温度"""
+        return self._feelslike
 
-    # 气温单位
     @property
-    def temperature_unit(self):
-        return TEMP_CELSIUS
+    def cloud_coverage(self):
+        """云量"""
+        return self._cloud
 
-    # 气压
     @property
-    def pressure(self):
-        return self._forecast_data['passedchart'][0]['pressure']
+    def native_temperature(self):
+        """温度"""
+        return self._temperature
 
-    # 气压单位
     @property
-    def pressure_unit(self):
-        return PRESSURE_HPA
+    def native_temperature_unit(self):
+        """温度单位"""
+        return self._attr_native_temperature_unit
 
-    # 湿度
     @property
     def humidity(self):
-        return float(self._forecast_data['real']['weather']['humidity'])
+        """湿度."""
+        return self._humidity
 
-    # 风速
     @property
-    def wind_speed(self):
-        return self._forecast_data['passedchart'][0]['windSpeed']
+    def native_wind_speed(self):
+        """风速"""
+        return self._wind_speed
 
-    # 风向
     @property
     def wind_bearing(self):
-        return self._forecast_data['real']['wind']['direct']
-
-    # 能见度
-    # @property
-    # def visibility(self):
-    #     return 0
-
-    # # 能见度单位
-    # @property
-    # def visibility_unit(self):
-    #     return LENGTH_KILOMETERS
-
-    # 降水量
-    @property
-    def precipitation(self):
-        return self._forecast_data['passedchart'][0]['rain1h']
-
-    # 降水量单位
-    @property
-    def precipitation_unit(self):
-        return PRECIPITATION_MILLIMETERS_PER_HOUR
-
-    # 空气质量
-    @property
-    def aqi(self):
-        return self._forecast_data.get('air',{}).get('aqi', '')
-
-    # 空气质量描述
-    @property
-    def aqi_description(self):
-        return self._forecast_data.get('air',{}).get('text', '')
-
-    # 预警
-    @final
-    @property
-    def alert(self):
-        return self._forecast_data['real']['warn']['alert']
-
-    # 状态属性
-    @property
-    def state_attributes(self):
-        data = super(NMCWeather, self).state_attributes
-        data['aqi'] = self.aqi
-        return data
+        """风向"""
+        return self._wind_bearing
 
     @property
-    def forecast(self):
+    def native_pressure(self):
+        """气压"""
+        return self._pressure
+
+    @property
+    def native_visibility(self):
+        """能见度"""
+        return self._visibility
+
+    @property
+    def native_precipitation(self):
+        """当前小时累计降水量"""
+        return self._precipitation
+
+    @property
+    def condition(self):
+        """天气情况"""
+        if self._condition:
+            match_status = CONDITION_MAP[self._condition]
+            return match_status if match_status else 'unknown'
+        else:
+            return 'unknown'
+
+    @property
+    def attribution(self):
+       """归属信息"""
+       return 'Powered by NMC.CN'
+
+    @property
+    def device_state_attributes(self):
+       """设置其它一些属性值"""
+       if self._condition is not None:
+           return {
+               ATTR_ATTRIBUTION: ATTRIBUTION,
+               ATTR_UPDATE_TIME: self._updatetime
+           }
+
+    async def async_forecast_daily(self) -> list[Forecast]:
+        """天预报"""
+        return self._forecast
+
+    async def async_forecast_hourly(self) -> list[Forecast]:
+        """小时预报"""
+        return self._forecast_hourly
+
+    # @asyncio.coroutine
+    async def async_update(self, now=DEFAULT_TIME):
+        """从远程更新信息."""
+        _LOGGER.info("update weather from nmc.cn ")
+
+        # 通过HTTP访问，获取需要的信息
+        # 此处使用了基于aiohttp库的async_get_clientsession
+        try:
+            timeout = aiohttp.ClientTimeout(total=20)
+            connector = aiohttp.TCPConnector(limit=10)
+            async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+                async with session.get(self. _url) as response:
+                    json_data = await response.json()
+                    weather = json_data["data"]
+        except(asyncio.TimeoutError, aiohttp.ClientError):
+            _LOGGER.error("Error while accessing: %s", self._url)
+            return
+
+        # 数据处理
+        self._condition = weather['real']['weather']['info']                     #天气
+        self._temperature = float(weather['real']['weather']['temperature'])     #温度
+        self._humidity = float(weather['real']['weather']['humidity'])           #湿度
+        self._pressure = weather['passedchart'][0]['pressure'] #气压
+        self._wind_speed = weather['passedchart'][0]['windSpeed'] #风速
+        self._wind_bearing = weather['real']['wind']['direct'] #风向
+        self._precipitation = float(weather['passedchart'][0]['rain1h']) #降水量
+        self._feelslike = float(weather['real']['weather']['feelst']) #体感温度
+
+        # self._dew = float(weather['real']['weather']["dew"]) #露点温度
+        # self._cloud = int(weather["cloud"]) #云量
+        # self._visibility = weather["vis"] #能见度
+
+        self._updatetime = weather["real"]["publish_time"]
+
         forecast_data = []
         for i in range(1, 7):
-            time_str = self._forecast_data['predict']['detail'][i]['date']
+            time_str = weather['predict']['detail'][i]['date']
             data_dict = {
                 ATTR_FORECAST_TIME: datetime.strptime(time_str, '%Y-%m-%d'),
-                ATTR_FORECAST_CONDITION: CONDITION_MAP[self._forecast_data['predict']['detail'][i]['day']['weather']['info']],
-                ATTR_FORECAST_TEMP: self._forecast_data['tempchart'][i + 7]['max_temp'],
-                ATTR_FORECAST_TEMP_LOW: self._forecast_data['tempchart'][i + 7]['min_temp'],
-                ATTR_FORECAST_WIND_BEARING: self._forecast_data['predict']['detail'][i]['day']['wind']['direct'],
-                ATTR_FORECAST_WIND_SPEED: self._forecast_data['predict']['detail'][i]['day']['wind']['power']
+                ATTR_FORECAST_CONDITION: CONDITION_MAP[weather['predict']['detail'][i]['day']['weather']['info']],
+                ATTR_FORECAST_NATIVE_TEMP: weather['tempchart'][i + 7]['max_temp'],
+                ATTR_FORECAST_NATIVE_TEMP_LOW: weather['tempchart'][i + 7]['min_temp'],
+                ATTR_FORECAST_WIND_BEARING: weather['predict']['detail'][i]['day']['wind']['direct'],
+                ATTR_FORECAST_WIND_SPEED: weather['predict']['detail'][i]['day']['wind']['power'],
+                'text': weather['predict']['detail'][i]['day']['weather']['info']
             }
             forecast_data.append(data_dict)
 
-        return forecast_data
+        self._forecast = forecast_data
+        self._forecast_hourly = []
 
-    def update(self):
-        update_result = False
-        try:
-            if self._code is not None:
-                print("NMCWeather start update：",self._url)
-                self._forecast_data = requests.get(self._url).json()['data']
-            update_result = True
-        except Exception as e:
-            print("NMCWeather update error", e)
-        if update_result:
-            return
-        else:
-            print("NMCWeather update failed, retry in 5s.")
-            try:
-                time.sleep(5)
-            except Exception as e:
-                print("NMCWeather update sleep error", e)
-            self.update()
+
+        _LOGGER.info("success to load local informations")
