@@ -276,7 +276,7 @@ class NmcWeather(WeatherEntity):
         self._updatetime = weather["real"]["publish_time"]
 
         forecast_data = []
-        for i in range(1, 7):
+        for i in range(0, 7):
             time_str = weather['predict']['detail'][i]['date']
             data_dict = {
                 ATTR_FORECAST_TIME: datetime.strptime(time_str, '%Y-%m-%d'),
