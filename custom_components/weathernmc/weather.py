@@ -304,14 +304,18 @@ class NmcWeather(WeatherEntity):
         forecast_data = []
         for i in range(0, 7):
             time_str = weather['predict']['detail'][i]['date']
+            dayInfo = weather['predict']['detail'][i]['day'];
+            if dayInfo['weather']['info'] == "9999":
+                dayInfo = weather['predict']['detail'][i]['night']
+
             data_dict = {
                 ATTR_FORECAST_TIME: datetime.strptime(time_str, '%Y-%m-%d'),
-                ATTR_FORECAST_CONDITION: CONDITION_MAP[weather['predict']['detail'][i]['day']['weather']['info']],
                 ATTR_FORECAST_NATIVE_TEMP: weather['tempchart'][i + 7]['max_temp'],
                 ATTR_FORECAST_NATIVE_TEMP_LOW: weather['tempchart'][i + 7]['min_temp'],
-                ATTR_FORECAST_WIND_BEARING: weather['predict']['detail'][i]['day']['wind']['direct'],
-                ATTR_FORECAST_WIND_SPEED: weather['predict']['detail'][i]['day']['wind']['power'],
-                'text': weather['predict']['detail'][i]['day']['weather']['info']
+                ATTR_FORECAST_CONDITION: CONDITION_MAP[dayInfo['weather']['info']],
+                ATTR_FORECAST_WIND_BEARING: dayInfo['wind']['direct'],
+                ATTR_FORECAST_WIND_SPEED: dayInfo['wind']['power'],
+                'text': dayInfo['weather']['info']
             }
             if datetime.strptime(time_str, "%Y-%m-%d").date() >= datetime.now().date():
                 forecast_data.append(data_dict)
