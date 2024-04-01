@@ -224,6 +224,14 @@ class NmcWeather(WeatherEntity):
                ATTR_ATTRIBUTION: ATTRIBUTION,
                ATTR_UPDATE_TIME: self._updatetime
            }
+    @property
+    def forecast(self):
+        """天预报"""
+        return self._forecast
+    @property
+    def forecast_hourly(self):
+        """小时预报"""
+        return self.forecast_hourly
 
     async def async_forecast_daily(self) -> list[Forecast]:
         """天预报"""
