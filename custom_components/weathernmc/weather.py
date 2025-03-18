@@ -91,8 +91,7 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
 
 # @asyncio.coroutine
 async def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
-    """Set up the hefeng weather."""
-    _LOGGER.info("setup platform weather.Heweather...")
+    _LOGGER.info("setup platform weathernmc")
 
     station_id = config.get(CONF_STATIONID)
     name = config.get(CONF_NAME)
@@ -110,7 +109,8 @@ class NmcWeather(WeatherEntity):
     _attr_native_visibility_unit = UnitOfLength.KILOMETERS
 
     def __init__(self, station_id, name):
-        """Initialize the  weather."""
+        _LOGGER.info("init platform weathernmc")
+
         self._url = "http://www.nmc.cn/rest/weather?stationid=" + station_id
 
         self._name = name
@@ -277,8 +277,9 @@ class NmcWeather(WeatherEntity):
                 async with session.get(self._url) as response:
                     json_data = await response.json()
                     weather = json_data["data"]
+                    _LOGGER.info("get weathernmc info: %s", json_data)
         except(asyncio.TimeoutError, aiohttp.ClientError):
-            _LOGGER.error("Error while accessing: %s", self._url)
+            _LOGGER.error("weathernmc Error while accessing: %s", self._url)
             return
 
         # 数据处理
@@ -304,7 +305,7 @@ class NmcWeather(WeatherEntity):
         forecast_data = []
         for i in range(0, 7):
             time_str = weather['predict']['detail'][i]['date']
-            dayInfo = weather['predict']['detail'][i]['day'];
+            dayInfo = weather['predict']['detail'][i]['day']
             if dayInfo['weather']['info'] == "9999":
                 dayInfo = weather['predict']['detail'][i]['night']
 
@@ -323,4 +324,4 @@ class NmcWeather(WeatherEntity):
         self._forecast = forecast_data
         self._forecast_hourly = []
 
-        _LOGGER.info("success to load local informations")
+        _LOGGER.info("success to load weathernmc")
