@@ -406,10 +406,16 @@ class NmcWeather(WeatherEntity):
             return
 
         # 数据处理
-        _info = weather['real']['weather']['info']  # 实时天气现象
-        if _info in ("-", "9999", "", "无", None):
-            # 实时观测为占位符/空值, 用当天白天预报兜底
-            _info = weather['predict']['detail'][0]['day']['weather']['info']
+        # 实时观测常为 '-'/'9999' 占位符; 按优先级取第一个有效现象:
+        # 实时 -> 今天日间 -> 今天夜间 -> 明天…… (跳过占位符)
+        _placeholders = ("-", "9999", "", "无", None)
+        _info = weather['real']['weather']['info']
+        if _info in _placeholders:
+            _cands = []
+            for _d in weather['predict']['detail'][:2]:
+                _cands.extend((_d['day']['weather']['info'],
+                               _d['night']['weather']['info']))
+            _info = next((c for c in _cands if c not in _placeholders), "未知")
         self._condition = _info  # 天气
         self._temperature = float(weather['real']['weather']['temperature'])  # 温度
         self._humidity = float(weather['real']['weather']['humidity'])  # 湿度
