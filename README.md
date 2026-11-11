@@ -5,9 +5,9 @@
 ```
 weather:
   - platform: weathernmc
-    stationId: '57749'
+    stationId: 'pJrqw'
     name: '怀化天气'
   - platform: weathernmc
-    stationId: '57687'
+    stationId: 'zOenJ'
     name: '长沙天气'
 ```
