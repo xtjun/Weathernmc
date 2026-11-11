@@ -1,4 +1,5 @@
 import logging
+import re
 from datetime import datetime, timedelta
 
 import asyncio
@@ -78,7 +79,129 @@ CONDITION_MAP = {
     '冰雹': 'hail',
     '9999': 'exceptional',
     '未知': 'exceptional',
+    '阵雨': 'rainy',
+    '雷阵雨伴有冰雹': 'lightning-rainy',
+    '小到中雨': 'rainy',
+    '中到大雨': 'rainy',
+    '大到暴雨': 'pouring',
+    '暴雨到大暴雨': 'pouring',
+    '浮尘': 'fog',
+    '沙尘暴': 'windy-variant',
+    '强沙尘暴': 'windy-variant',
+    '阵雪': 'snowy',
 }
+
+
+NMC_IMG_TEXT = {
+    '0': '晴', '1': '多云', '2': '阴', '3': '阵雨',
+    '4': '雷阵雨', '5': '雷阵雨伴有冰雹',
+    '6': '雨夹雪', '7': '小雨', '8': '中雨', '9': '大雨',
+    '10': '暴雨', '11': '大暴雨', '12': '特大暴雨',
+    '13': '阵雪', '14': '小雪', '15': '中雪', '16': '大雪',
+    '17': '暴雪', '18': '雾', '19': '冻雨', '20': '沙尘暴',
+    '21': '小到中雨', '22': '中到大雨', '23': '大到暴雨',
+    '24': '暴雨到大暴雨', '25': '大暴雨到特大暴雨',
+    '26': '小到中雪', '27': '中到大雪', '28': '大到暴雪',
+    '29': '浮尘', '30': '扬沙', '31': '强沙尘暴',
+    '9999': '未知',
+}
+
+
+async def _weathernmc_fetch_hourly(station_url):
+    """解析 nmc 站点 HTML 页面里的逐小时预报."""
+    if not station_url:
+        return []
+    url = "https://www.nmc.cn" + station_url
+    try:
+        async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=20),
+                headers={'User-Agent': 'Mozilla/5.0'}) as session:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    _LOGGER.error("weathernmc hourly http status %s", resp.status)
+                    return []
+                html = await resp.text()
+    except (asyncio.TimeoutError, aiohttp.ClientError) as err:
+        _LOGGER.warning("weathernmc hourly fetch error: %s", err)
+        return []
+
+    idx = html.find('hourItems')
+    if idx == -1:
+        return []
+    seg = html[idx:]
+
+    day_blocks = list(re.finditer(r'id=(day\d+)[^>]*>', seg))
+    now = datetime.now()
+    today = now.date()
+    seen = {}
+
+    for bi, m in enumerate(day_blocks):
+        block_end = day_blocks[bi + 1].start() if bi + 1 < len(day_blocks) else len(seg)
+        block = seg[m.start():block_end]
+        items = list(re.finditer(
+            r'<div class="?hour3[^"]*"[^>]*>(.*?)</div>\s*</div>', block, re.S))
+        if not items:
+            continue
+
+        anchor_j = None
+        anchor_mday = None
+        for j, it in enumerate(items):
+            dm = re.search(r'(\d{1,2})日', it.group(1))
+            if dm:
+                anchor_j = j
+                anchor_mday = int(dm.group(1))
+                break
+        if anchor_j is None:
+            continue
+
+        tm = re.search(r'(\d{1,2}):(\d{2})', items[anchor_j].group(1))
+        try:
+            a_date = today.replace(day=anchor_mday)
+            if anchor_mday < today.day:
+                if a_date.month == 12:
+                    a_date = a_date.replace(year=a_date.year + 1, month=1)
+                else:
+                    a_date = a_date.replace(month=a_date.month + 1)
+            if tm:
+                anchor_dt = datetime.combine(a_date, datetime.min.time()).replace(
+                    hour=int(tm.group(1)), minute=int(tm.group(2)))
+            else:
+                anchor_dt = datetime.combine(a_date, datetime.min.time())
+        except ValueError:
+            continue
+
+        for j, it in enumerate(items):
+            inner = it.group(1)
+            dt = anchor_dt + timedelta(hours=3 * (j - anchor_j))
+            if dt <= now:
+                continue
+            key = dt.isoformat()
+            if key in seen:
+                continue
+
+            tcode = re.search(r'/w/40x40/3/(\d+)\.png', inner)
+            code = tcode.group(1) if tcode else None
+            text = NMC_IMG_TEXT.get(code, '未知') if code else '未知'
+
+            temp = re.search(r'<div[^>]*>\s*(-?\d+\.?\d*)℃', inner)
+            wspd = re.search(r'<div[^>]*>\s*(-?\d+\.?\d*)m/s', inner)
+            wdir = re.search(r'<div[^>]*>\s*([\u4e00-\u9fa5]*?风)\s*</div>', inner)
+            hum = re.search(r'<div[^>]*>\s*(-?\d+\.?\d*)%', inner)
+
+            entry = {
+                ATTR_FORECAST_TIME: dt,
+                ATTR_FORECAST_CONDITION: CONDITION_MAP.get(text, 'unknown'),
+                ATTR_FORECAST_NATIVE_TEMP: float(temp.group(1)) if temp else None,
+                ATTR_FORECAST_WIND_BEARING: wdir.group(1) if wdir else None,
+                ATTR_FORECAST_NATIVE_WIND_SPEED: round(float(wspd.group(1)) * 3.6, 1) if wspd else None,
+                'text': text,
+            }
+            if hum:
+                entry[ATTR_FORECAST_HUMIDITY] = float(hum.group(1))
+            seen[key] = entry
+
+    return [seen[k] for k in sorted(seen)]
+
 
 ATTR_UPDATE_TIME = "更新时间"
 ATTRIBUTION = "来自nmc.cn的天气数据"
@@ -211,7 +334,7 @@ class NmcWeather(WeatherEntity):
     def condition(self):
         """天气情况"""
         if self._condition:
-            match_status = CONDITION_MAP[self._condition]
+            match_status = CONDITION_MAP.get(self._condition, "unknown")
             return match_status if match_status else 'unknown'
         else:
             return 'unknown'
@@ -283,7 +406,11 @@ class NmcWeather(WeatherEntity):
             return
 
         # 数据处理
-        self._condition = weather['real']['weather']['info']  # 天气
+        _info = weather['real']['weather']['info']  # 实时天气现象
+        if _info in ("-", "9999", "", "无", None):
+            # 实时观测为占位符/空值, 用当天白天预报兜底
+            _info = weather['predict']['detail'][0]['day']['weather']['info']
+        self._condition = _info  # 天气
         self._temperature = float(weather['real']['weather']['temperature'])  # 温度
         self._humidity = float(weather['real']['weather']['humidity'])  # 湿度
         self._pressure = weather['passedchart'][0]['pressure']  # 气压
@@ -313,7 +440,7 @@ class NmcWeather(WeatherEntity):
                 ATTR_FORECAST_TIME: datetime.strptime(time_str, '%Y-%m-%d'),
                 ATTR_FORECAST_NATIVE_TEMP: weather['tempchart'][i + 7]['max_temp'],
                 ATTR_FORECAST_NATIVE_TEMP_LOW: weather['tempchart'][i + 7]['min_temp'],
-                ATTR_FORECAST_CONDITION: CONDITION_MAP[dayInfo['weather']['info']],
+                ATTR_FORECAST_CONDITION: CONDITION_MAP.get(dayInfo['weather']['info'], 'unknown'),
                 ATTR_FORECAST_WIND_BEARING: dayInfo['wind']['direct'],
                 ATTR_FORECAST_WIND_SPEED: dayInfo['wind']['power'],
                 'text': dayInfo['weather']['info']
@@ -322,6 +449,11 @@ class NmcWeather(WeatherEntity):
                 forecast_data.append(data_dict)
 
         self._forecast = forecast_data
-        self._forecast_hourly = []
+        try:
+            _station_url = weather.get('real', {}).get('station', {}).get('url')
+            self._forecast_hourly = await _weathernmc_fetch_hourly(_station_url)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("weathernmc hourly parse error: %s", err)
+            self._forecast_hourly = []
 
         _LOGGER.info("success to load weathernmc")
